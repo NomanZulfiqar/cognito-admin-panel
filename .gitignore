@@ -33,6 +33,9 @@ infrastructure/*.zip
 lambda/node_modules/
 *.zip
 
+# Build files (generated during CI/CD)
+build/
+
 # Logs
 logs/
 *.log
