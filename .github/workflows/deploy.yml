@@ -32,27 +32,6 @@ jobs:
         cd lambda
         npm ci
         
-    - name: Get API Gateway URL from Terraform
-      id: get-api-url
-      run: |
-        cd infrastructure
-        terraform init
-        API_ID=$(terraform output -raw api_gateway_url | cut -d'/' -f3 | cut -d'.' -f1)
-        echo "api_url=https://${API_ID}.execute-api.us-east-1.amazonaws.com/prod" >> $GITHUB_OUTPUT
-        
-    - name: Create production environment file
-      run: |
-        cat > .env.production << EOF
-        REACT_APP_API_URL=${{ steps.get-api-url.outputs.api_url }}
-        REACT_APP_USER_POOL_ID=us-east-1_adCNyuj1g
-        REACT_APP_CLIENT_ID=6jco9g2vmm2nfqkb5rcsmtq3gt
-        REACT_APP_CLIENT_SECRET=8qc2jck6rt6lidd048noggddnlb4j2ebmhsb7pm09r72tval2pm
-        REACT_APP_REGION=us-east-1
-        EOF
-        
-    - name: Build React app
-      run: npm run build
-      
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -60,10 +39,25 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: us-east-1
         
-    - name: Deploy Lambda function
+    - name: Deploy infrastructure
       run: |
         cd infrastructure
+        terraform init
         terraform apply -auto-approve
+        
+    - name: Get API Gateway URL and build React app
+      run: |
+        cd infrastructure
+        API_ID=$(terraform output -raw api_gateway_url | cut -d'/' -f3 | cut -d'.' -f1)
+        cd ..
+        cat > .env.production << EOF
+        REACT_APP_API_URL=https://${API_ID}.execute-api.us-east-1.amazonaws.com/prod
+        REACT_APP_USER_POOL_ID=us-east-1_adCNyuj1g
+        REACT_APP_CLIENT_ID=6jco9g2vmm2nfqkb5rcsmtq3gt
+        REACT_APP_CLIENT_SECRET=8qc2jck6rt6lidd048noggddnlb4j2ebmhsb7pm09r72tval2pm
+        REACT_APP_REGION=us-east-1
+        EOF
+        npm run build
         
     - name: Upload to S3
       run: |
