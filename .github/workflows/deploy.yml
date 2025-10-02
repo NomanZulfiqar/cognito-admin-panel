@@ -19,6 +19,11 @@ jobs:
         node-version: '18'
         cache: 'npm'
         
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: '1.5.0'
+        
     - name: Install React dependencies
       run: npm ci
       
