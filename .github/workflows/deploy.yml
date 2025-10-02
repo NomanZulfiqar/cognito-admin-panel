@@ -1,0 +1,75 @@
+name: Deploy Admin Panel to VPC
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Install React dependencies
+      run: npm ci
+      
+    - name: Install Lambda dependencies
+      run: |
+        cd lambda
+        npm ci
+        
+    - name: Get API Gateway URL from Terraform
+      id: get-api-url
+      run: |
+        cd infrastructure
+        terraform init
+        API_ID=$(terraform output -raw api_gateway_url | cut -d'/' -f3 | cut -d'.' -f1)
+        echo "api_url=https://${API_ID}.execute-api.us-east-1.amazonaws.com/prod" >> $GITHUB_OUTPUT
+        
+    - name: Create production environment file
+      run: |
+        cat > .env.production << EOF
+        REACT_APP_API_URL=${{ steps.get-api-url.outputs.api_url }}
+        REACT_APP_USER_POOL_ID=us-east-1_adCNyuj1g
+        REACT_APP_CLIENT_ID=6jco9g2vmm2nfqkb5rcsmtq3gt
+        REACT_APP_CLIENT_SECRET=8qc2jck6rt6lidd048noggddnlb4j2ebmhsb7pm09r72tval2pm
+        REACT_APP_REGION=us-east-1
+        EOF
+        
+    - name: Build React app
+      run: npm run build
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+        
+    - name: Deploy Lambda function
+      run: |
+        cd infrastructure
+        terraform apply -auto-approve
+        
+    - name: Upload to S3
+      run: |
+        cd infrastructure
+        BUCKET_NAME=$(terraform output -raw admin_panel_bucket_name)
+        aws s3 sync ../build/ s3://${BUCKET_NAME}/ --delete
+        
+    - name: Get deployment URLs
+      run: |
+        cd infrastructure
+        echo "🚀 Deployment Complete!"
+        echo "📍 S3 Website URL: $(terraform output -raw admin_panel_website_url)"
+        echo "🔗 API Gateway URL: $(terraform output -raw api_gateway_url)"
+        echo "🔒 Access: VPC-only (requires VPC connection)"

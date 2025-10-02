@@ -1,0 +1,30 @@
+{
+  "name": "cognito-admin-panel",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@aws-amplify/auth": "^6.15.1",
+    "aws-amplify": "^6.15.6",
+    "aws-sdk": "^2.1692.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "deploy": "npm run build && cd infrastructure && terraform apply -auto-approve"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
