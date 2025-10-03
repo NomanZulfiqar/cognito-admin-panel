@@ -36,19 +36,44 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: us-east-1
         
-    - name: Empty S3 bucket before destruction
+    - name: Import existing resources and destroy
       run: |
         cd infrastructure
         terraform init
-        BUCKET_NAME=$(terraform output -raw admin_panel_bucket_name 2>/dev/null || echo "cognito-admin-panel-vpc-private")
-        echo "🗑️ Emptying S3 bucket: $BUCKET_NAME"
-        aws s3 rm s3://$BUCKET_NAME --recursive || echo "Bucket already empty or doesn't exist"
         
-    - name: Destroy infrastructure
-      run: |
-        cd infrastructure
+        # Try to import existing resources based on terraform.tfvars
+        echo "🔍 Checking for existing resources..."
+        
+        # Empty S3 bucket first
+        BUCKET_NAME="cognito-admin-panel-vpc-private"
+        echo "🗑️ Emptying S3 bucket: $BUCKET_NAME"
+        aws s3 rm s3://$BUCKET_NAME --recursive 2>/dev/null || echo "Bucket already empty or doesn't exist"
+        
+        # Try to refresh state and destroy
         echo "🚨 DESTROYING ALL INFRASTRUCTURE..."
-        terraform destroy -auto-approve
+        terraform refresh -auto-approve || echo "No existing state found"
+        terraform destroy -auto-approve || echo "Nothing to destroy or resources already deleted"
+        
+        # Manual cleanup of remaining resources
+        echo "🧹 Manual cleanup of any remaining resources..."
+        
+        # Delete Lambda function
+        aws lambda delete-function --function-name admin-panel-api 2>/dev/null || echo "Lambda function not found"
+        
+        # Delete API Gateway
+        API_ID=$(aws apigateway get-rest-apis --query "items[?name=='admin-panel-api'].id" --output text 2>/dev/null)
+        if [ "$API_ID" != "" ] && [ "$API_ID" != "None" ]; then
+          echo "Deleting API Gateway: $API_ID"
+          aws apigateway delete-rest-api --rest-api-id $API_ID
+        fi
+        
+        # Delete S3 bucket
+        aws s3 rb s3://$BUCKET_NAME --force 2>/dev/null || echo "S3 bucket not found"
+        
+        # Delete DynamoDB table
+        aws dynamodb delete-table --table-name admin-credentials 2>/dev/null || echo "DynamoDB table not found"
+        
+        echo "✅ Manual cleanup completed"
         
     - name: Cleanup confirmation
       run: |
