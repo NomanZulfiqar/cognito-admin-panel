@@ -5,6 +5,14 @@ terraform {
       version = "~> 5.0"
     }
   }
+  
+  backend "s3" {
+    bucket         = "noman-rocket-zulfiqar-terraform-backend-us-east-1"
+    key            = "cognito-admin-panel/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "noman-rocket-zulfiqar-terraform-backend-us-east-1.lock"
+    encrypt        = true
+  }
 }
 
 provider "aws" {

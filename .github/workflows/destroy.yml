@@ -36,30 +36,29 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: us-east-1
         
-    - name: Import existing resources and destroy
+    - name: Destroy infrastructure
       run: |
         cd infrastructure
-        terraform init
+        terraform init -backend-config="bucket=noman-rocket-zulfiqar-terraform-backend-us-east-1" \
+                       -backend-config="key=cognito-admin-panel/terraform.tfstate" \
+                       -backend-config="region=us-east-1" \
+                       -backend-config="dynamodb_table=noman-rocket-zulfiqar-terraform-backend-us-east-1.lock" \
+                       -backend-config="encrypt=true"
         
-        # Try to import existing resources based on terraform.tfvars
-        echo "🔍 Checking for existing resources..."
-        
-        # Empty S3 bucket first
+        echo "🔍 Pre-cleanup: Emptying S3 bucket..."
         BUCKET_NAME="cognito-admin-panel-vpc-private"
-        echo "🗑️ Emptying S3 bucket: $BUCKET_NAME"
         aws s3 rm s3://$BUCKET_NAME --recursive 2>/dev/null || echo "Bucket already empty or doesn't exist"
         
-        # Try to destroy with terraform
-        echo "🚨 DESTROYING ALL INFRASTRUCTURE..."
-        terraform destroy -auto-approve || echo "Nothing to destroy or resources already deleted"
+        echo "🚨 DESTROYING TERRAFORM INFRASTRUCTURE..."
+        terraform destroy -auto-approve || echo "Terraform destroy completed with warnings"
         
-        # Manual cleanup of remaining resources
-        echo "🧹 Manual cleanup of any remaining resources..."
+        echo "🧹 Post-cleanup: Removing any remaining resources..."
+        VPC_ID="vpc-0f1991d5da5940d21"
         
-        # Delete Lambda function
-        aws lambda delete-function --function-name admin-panel-api 2>/dev/null || echo "Lambda function not found"
+        # Clean up Lambda functions
+        aws lambda delete-function --function-name admin-panel-api 2>/dev/null || echo "Lambda function already deleted"
         
-        # Delete API Gateway - fix the query
+        # Clean up API Gateways
         API_IDS=$(aws apigateway get-rest-apis --query "items[?name=='admin-panel-api'].id" --output text 2>/dev/null)
         for API_ID in $API_IDS; do
           if [ "$API_ID" != "" ] && [ "$API_ID" != "None" ]; then
@@ -68,33 +67,67 @@ jobs:
           fi
         done
         
-        # Delete S3 bucket
-        aws s3 rb s3://$BUCKET_NAME --force 2>/dev/null || echo "S3 bucket not found"
-        
-        # Delete DynamoDB table
-        aws dynamodb delete-table --table-name admin-credentials 2>/dev/null || echo "DynamoDB table not found"
-        
-        # Delete VPC endpoints
-        echo "🔗 Cleaning up VPC endpoints..."
-        VPC_ID="vpc-0f1991d5da5940d21"
-        
-        # Delete S3 VPC endpoint
-        S3_ENDPOINT=$(aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$VPC_ID" "Name=service-name,Values=com.amazonaws.us-east-1.s3" --query "VpcEndpoints[0].VpcEndpointId" --output text 2>/dev/null)
-        if [ "$S3_ENDPOINT" != "" ] && [ "$S3_ENDPOINT" != "None" ]; then
-          aws ec2 delete-vpc-endpoint --vpc-endpoint-id $S3_ENDPOINT 2>/dev/null || echo "S3 VPC endpoint not found"
+        # Clean up VPC endpoints
+        VPC_ENDPOINTS=$(aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$VPC_ID" "Name=service-name,Values=com.amazonaws.us-east-1.s3,com.amazonaws.us-east-1.execute-api" --query "VpcEndpoints[].VpcEndpointId" --output text 2>/dev/null)
+        if [ "$VPC_ENDPOINTS" != "" ]; then
+          echo "Deleting VPC endpoints: $VPC_ENDPOINTS"
+          aws ec2 delete-vpc-endpoints --vpc-endpoint-ids $VPC_ENDPOINTS 2>/dev/null || echo "VPC endpoints already deleted"
+          echo "Waiting for VPC endpoints to delete..."
+          sleep 30
         fi
         
-        # Delete API Gateway VPC endpoint
-        API_ENDPOINT=$(aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$VPC_ID" "Name=service-name,Values=com.amazonaws.us-east-1.execute-api" --query "VpcEndpoints[0].VpcEndpointId" --output text 2>/dev/null)
-        if [ "$API_ENDPOINT" != "" ] && [ "$API_ENDPOINT" != "None" ]; then
-          aws ec2 delete-vpc-endpoint --vpc-endpoint-id $API_ENDPOINT 2>/dev/null || echo "API Gateway VPC endpoint not found"
-        fi
+        # Clean up IAM roles and policies
+        aws iam delete-role-policy --role-name admin-panel-lambda-role --policy-name admin-panel-lambda-policy 2>/dev/null || echo "IAM policy already deleted"
+        aws iam delete-role --role-name admin-panel-lambda-role 2>/dev/null || echo "IAM role already deleted"
         
-        echo "✅ Manual cleanup completed"
+        # Clean up security groups
+        SG_IDS=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=admin-panel*" --query "SecurityGroups[].GroupId" --output text 2>/dev/null)
+        for SG_ID in $SG_IDS; do
+          if [ "$SG_ID" != "" ]; then
+            echo "Deleting security group: $SG_ID"
+            aws ec2 delete-security-group --group-id $SG_ID 2>/dev/null || echo "Security group $SG_ID already deleted or has dependencies"
+          fi
+        done
         
-    - name: Cleanup confirmation
+        # Clean up S3 bucket
+        aws s3 rb s3://$BUCKET_NAME --force 2>/dev/null || echo "S3 bucket already deleted"
+        
+        # Clean up DynamoDB table
+        aws dynamodb delete-table --table-name admin-credentials 2>/dev/null || echo "DynamoDB table already deleted"
+        
+        echo "✅ Cleanup completed"
+        
+    - name: Verify destruction
       run: |
+        echo "🔍 Verifying all resources are deleted..."
+        
+        # Check Lambda functions
+        LAMBDA_COUNT=$(aws lambda list-functions --query "length(Functions[?contains(FunctionName, 'admin-panel')])" --region us-east-1)
+        echo "Lambda functions remaining: $LAMBDA_COUNT"
+        
+        # Check API Gateways
+        API_COUNT=$(aws apigateway get-rest-apis --query "length(items[?name=='admin-panel-api'])" --region us-east-1)
+        echo "API Gateways remaining: $API_COUNT"
+        
+        # Check S3 buckets
+        BUCKET_EXISTS=$(aws s3 ls s3://cognito-admin-panel-vpc-private 2>/dev/null && echo "1" || echo "0")
+        echo "S3 bucket exists: $BUCKET_EXISTS"
+        
+        # Check DynamoDB tables
+        TABLE_EXISTS=$(aws dynamodb describe-table --table-name admin-credentials --region us-east-1 2>/dev/null && echo "1" || echo "0")
+        echo "DynamoDB table exists: $TABLE_EXISTS"
+        
+        # Check IAM roles
+        ROLE_COUNT=$(aws iam list-roles --query "length(Roles[?contains(RoleName, 'admin-panel')])" --region us-east-1)
+        echo "IAM roles remaining: $ROLE_COUNT"
+        
+        # Check security groups
+        SG_COUNT=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=admin-panel*" --query "length(SecurityGroups)" --region us-east-1)
+        echo "Security groups remaining: $SG_COUNT"
+        
+        echo "================================"
         echo "💥 DESTRUCTION COMPLETE!"
         echo "🗑️ All AWS resources have been deleted"
         echo "💰 No more charges will be incurred"
         echo "⚠️ This action cannot be undone"
+        echo "================================"

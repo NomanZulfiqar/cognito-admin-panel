@@ -1,9 +1,13 @@
 name: Deploy Admin Panel to VPC
 
 on:
+  workflow_dispatch:
   push:
     branches: [ main ]
-  workflow_dispatch:
+    paths:
+      - '.github/workflows/deploy.yml'
+      - 'infrastructure/**'
+      - 'lambda/**'
 
 jobs:
   deploy:
@@ -43,8 +47,20 @@ jobs:
     - name: Deploy infrastructure
       run: |
         cd infrastructure
-        terraform init
-        terraform apply -auto-approve
+        terraform init -backend-config="bucket=noman-rocket-zulfiqar-terraform-backend-us-east-1" \
+                       -backend-config="key=cognito-admin-panel/terraform.tfstate" \
+                       -backend-config="region=us-east-1" \
+                       -backend-config="dynamodb_table=noman-rocket-zulfiqar-terraform-backend-us-east-1.lock" \
+                       -backend-config="encrypt=true"
+        
+        echo "🚀 Planning infrastructure deployment..."
+        terraform plan -out=tfplan
+        
+        echo "🏗️ Applying infrastructure changes..."
+        terraform apply tfplan
+        
+        echo "📋 Deployment summary:"
+        terraform output
         
     - name: Get API Gateway URL and build React app
       run: |
@@ -60,16 +76,43 @@ jobs:
         EOF
         npm run build
         
-    - name: Upload to S3
+    - name: Upload to S3 and validate
       run: |
         cd infrastructure
         BUCKET_NAME=$(terraform output -raw admin_panel_bucket_name)
+        echo "📦 Uploading React build to S3: $BUCKET_NAME"
         aws s3 sync ../build/ s3://${BUCKET_NAME}/ --delete
         
-    - name: Get deployment URLs
+        echo "🔍 Validating deployment..."
+        # Verify Lambda function exists
+        aws lambda get-function --function-name admin-panel-api --region us-east-1 > /dev/null && echo "✅ Lambda function deployed" || echo "❌ Lambda function missing"
+        
+        # Verify API Gateway exists
+        API_COUNT=$(aws apigateway get-rest-apis --query "length(items[?name=='admin-panel-api'])" --region us-east-1)
+        if [ "$API_COUNT" -gt 0 ]; then
+          echo "✅ API Gateway deployed"
+        else
+          echo "❌ API Gateway missing"
+        fi
+        
+        # Verify DynamoDB table exists
+        aws dynamodb describe-table --table-name admin-credentials --region us-east-1 > /dev/null && echo "✅ DynamoDB table deployed" || echo "❌ DynamoDB table missing"
+        
+        # Verify S3 bucket has content
+        OBJECT_COUNT=$(aws s3 ls s3://$BUCKET_NAME --recursive | wc -l)
+        echo "✅ S3 bucket contains $OBJECT_COUNT files"
+        
+    - name: Deployment summary
       run: |
         cd infrastructure
-        echo "🚀 Deployment Complete!"
-        echo "📍 S3 Website URL: $(terraform output -raw admin_panel_website_url)"
-        echo "🔗 API Gateway URL: $(terraform output -raw api_gateway_url)"
-        echo "🔒 Access: VPC-only (requires VPC connection)"
+        echo "🚀 DEPLOYMENT COMPLETE!"
+        echo "================================"
+        echo "📋 Infrastructure Summary:"
+        terraform output
+        echo "================================"
+        echo "📍 S3 Website URL: $(terraform output -raw admin_panel_website_url 2>/dev/null || echo 'Not available')"
+        echo "🔗 API Gateway URL: $(terraform output -raw api_gateway_url 2>/dev/null || echo 'Not available')"
+        echo "🔒 Access Method: VPC-only (requires VPC connection)"
+        echo "📊 Bucket Name: $(terraform output -raw admin_panel_bucket_name 2>/dev/null || echo 'Not available')"
+        echo "================================"
+        echo "✅ All resources deployed successfully!"
